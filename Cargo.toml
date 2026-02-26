@@ -1,0 +1,18 @@
+[package]
+name = "auria-cli"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/auria-core/auria-runtime"
+authors = ["AURIA Team <auria@dust.llc>"]
+description = "AURIA Runtime Core - CLI binary"
+
+[[bin]]
+name = "auria-cli"
+path = "src/main.rs"
+
+[dependencies]
+auria-node = { path = "../auria-node", version = "0.1.0"}
+anyhow = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "time", "signal"] }
