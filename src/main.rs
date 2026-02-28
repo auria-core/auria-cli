@@ -1,3 +1,10 @@
+// File: main.rs - This file is part of AURIA
+// Copyright (c) 2026 AURIA Developers and Contributors
+// Description:
+//     Command-line interface for Auria Node.
+//     Provides CLI commands for starting/stopping the node, checking status,
+//     and managing wallet connections.
+//
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
