@@ -7,6 +7,9 @@
 //
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -15,8 +18,8 @@ use std::path::PathBuf;
     about = "Auria CLI - Command Line Interface for Auria Node"
 )]
 struct Cli {
-    #[arg(short, long, default_value = "config.toml")]
-    config: PathBuf,
+    #[arg(short, long, default_value = "http://localhost:8080")]
+    url: String,
 
     #[command(subcommand)]
     cmd: Command,
@@ -24,220 +27,434 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    Start {
+    Chat {
         #[arg(short, long)]
-        bind: Option<String>,
-
-        #[arg(long)]
-        no_gpu: bool,
+        model: Option<String>,
+        
+        #[arg(short, long, default_value = "100")]
+        max_tokens: u32,
+        
+        message: String,
     },
-    Stop,
-    Status,
-    Config {
+    Complete {
         #[arg(short, long)]
-        show: bool,
-
+        model: Option<String>,
+        
+        prompt: String,
+    },
+    Models,
+    Status,
+    Health,
+    Metrics,
+    Peers {
         #[arg(long)]
-        set_tier: Option<String>,
+        list: bool,
+        
+        #[arg(long)]
+        connect: Option<String>,
+        
+        #[arg(long)]
+        disconnect: Option<String>,
+    },
+    Settlement {
+        #[arg(long)]
+        status: bool,
+        
+        #[arg(long)]
+        submit: bool,
+        
+        #[arg(long)]
+        withdraw: bool,
+        
+        #[arg(long)]
+        history: bool,
+    },
+    Cluster {
+        #[arg(long)]
+        status: bool,
+        
+        #[arg(long)]
+        workers: bool,
+        
+        #[arg(long)]
+        add_worker: Option<String>,
+    },
+    Model {
+        #[arg(long)]
+        status: bool,
+        
+        #[arg(long)]
+        load: Option<String>,
     },
     Wallet {
         #[arg(long)]
-        connect: Option<String>,
-
+        create: bool,
+        
         #[arg(long)]
-        disconnect: bool,
-
+        import: Option<String>,
+        
+        #[arg(long)]
+        address: bool,
+        
         #[arg(long)]
         balance: bool,
     },
-    Node {
-        #[command(subcommand)]
-        cmd: NodeCommand,
-    },
-    Cluster {
-        #[command(subcommand)]
-        cmd: ClusterCommand,
-    },
-    License {
-        #[command(subcommand)]
-        cmd: LicenseCommand,
-    },
-    Metrics {
-        #[arg(long)]
-        port: Option<u16>,
-
-        #[arg(long)]
-        format: Option<String>,
-    },
 }
 
-#[derive(Subcommand, Debug)]
-enum NodeCommand {
-    List,
-    Info { node_id: Option<String> },
-    Add { address: String },
-    Remove { node_id: String },
-}
-
-#[derive(Subcommand, Debug)]
-enum ClusterCommand {
-    Status,
-    Workers {
-        #[command(subcommand)]
-        cmd: WorkersCommand,
-    },
-    Distribute {
-        expert_ids: Vec<String>,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-enum WorkersCommand {
-    List,
-    Add { address: String, tier: String },
-    Remove { worker_id: String },
-}
-
-#[derive(Subcommand, Debug)]
-enum LicenseCommand {
-    List,
-    Add { shard_id: String },
-    Revoke { shard_id: String },
-    Validate { shard_id: String },
-}
-
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let client = Client::new();
+    let base_url = cli.url.trim_end_matches('/');
 
     match cli.cmd {
-        Command::Start { bind, no_gpu } => {
-            println!("Starting Auria Node...");
-            if let Some(addr) = bind {
-                println!("  Bind address: {}", addr);
+        Command::Chat { model, max_tokens, message } => {
+            let model_name = model.unwrap_or_else(|| "nano".to_string());
+            let request = json!({
+                "model": model_name,
+                "messages": [
+                    {"role": "user", "content": message}
+                ],
+                "max_tokens": max_tokens,
+                "stream": false
+            });
+
+            let response = client
+                .post(format!("{}/v1/chat/completions", base_url))
+                .json(&request)
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                let data: serde_json::Value = response.json().await?;
+                let content = &data["choices"][0]["message"]["content"];
+                println!("{}", content);
+            } else {
+                eprintln!("Error: {}", response.text().await?);
             }
-            if no_gpu {
-                println!("  GPU disabled");
+        }
+
+        Command::Complete { model, prompt } => {
+            let model_name = model.unwrap_or_else(|| "nano".to_string());
+            let request = json!({
+                "model": model_name,
+                "prompt": prompt,
+                "max_tokens": 100
+            });
+
+            let response = client
+                .post(format!("{}/v1/completions", base_url))
+                .json(&request)
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                let data: serde_json::Value = response.json().await?;
+                let text = &data["choices"][0]["text"];
+                println!("{}", text);
+            } else {
+                eprintln!("Error: {}", response.text().await?);
             }
-            println!("Configuration: {:?}", cli.config);
         }
-        Command::Stop => {
-            println!("Stopping Auria Node...");
+
+        Command::Models => {
+            let response = client
+                .get(format!("{}/v1/models", base_url))
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                let data: serde_json::Value = response.json().await?;
+                println!("Available models:");
+                for model in data["data"].as_array().unwrap_or(&vec![]) {
+                    println!("  - {} (created: {})", 
+                        model["id"], 
+                        model["created"]
+                    );
+                }
+            } else {
+                eprintln!("Error: {}", response.text().await?);
+            }
         }
+
         Command::Status => {
-            println!("=== Auria Node Status ===");
-            println!("Status: Running");
-            println!("Node ID: {}", generate_node_id());
-            println!("Tiers enabled: Nano, Standard, Pro, Max");
-            println!("CPU: Available");
-            println!("GPU: Available");
-            println!("Cluster: Connected (3 workers)");
-        }
-        Command::Config { show, set_tier } => {
-            if show {
-                println!("=== Current Configuration ===");
-                println!("http_port: 8080");
-                println!("grpc_port: 50051");
-                println!("data_dir: ./data");
-                println!("log_level: info");
-                println!("enabled_tiers: [nano, standard, pro, max]");
-                println!("gpu_enabled: true");
-            }
-            if let Some(tier) = set_tier {
-                println!("Setting default tier to: {}", tier);
+            let response = client
+                .get(format!("{}/api/v1/status", base_url))
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                let data: serde_json::Value = response.json().await?;
+                println!("=== Node Status ===");
+                println!("Node ID: {}", data["node_id"]);
+                println!("P2P Enabled: {}", data["p2p_enabled"]);
+                println!("Active Requests: {}", data["active_requests"]);
+                println!("Peers: {}", data["peers"].as_array().map(|p| p.len()).unwrap_or(0));
+            } else {
+                eprintln!("Error: {}", response.text().await?);
             }
         }
-        Command::Wallet {
-            connect,
-            disconnect,
-            balance,
-        } => {
+
+        Command::Health => {
+            let response = client
+                .get(format!("{}/health", base_url))
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                let data: serde_json::Value = response.json().await?;
+                println!("Status: {}", data["status"]);
+                println!("Version: {}", data["version"]);
+            } else {
+                eprintln!("Error: {}", response.text().await?);
+            }
+        }
+
+        Command::Metrics => {
+            let response = client
+                .get(format!("{}/metrics", base_url))
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                println!("{}", response.text().await?);
+            } else {
+                eprintln!("Error: {}", response.text().await?);
+            }
+        }
+
+        Command::Peers { list, connect, disconnect } => {
+            if list {
+                let response = client
+                    .get(format!("{}/api/v1/peers", base_url))
+                    .send()
+                    .await?;
+
+                if response.status().is_success() {
+                    let data: serde_json::Value = response.json().await?;
+                    println!("=== Connected Peers ===");
+                    println!("Count: {}", data["count"]);
+                    for peer in data["peers"].as_array().unwrap_or(&vec![]) {
+                        println!("  - {} ({}) [connected: {}]", 
+                            peer["node_id"],
+                            peer["address"],
+                            peer["connected_at"]
+                        );
+                    }
+                }
+            }
+
             if let Some(addr) = connect {
-                println!("Connecting wallet: {}", addr);
+                let request = json!({
+                    "address": addr,
+                    "port": 9000
+                });
+
+                let response = client
+                    .post(format!("{}/api/v1/peers/connect", base_url))
+                    .json(&request)
+                    .send()
+                    .await?;
+
+                let data: serde_json::Value = response.json().await?;
+                println!("Connect: {} - {}", data["success"], data["message"]);
             }
-            if disconnect {
-                println!("Disconnecting wallet...");
-            }
-            if balance {
-                println!("Wallet balance: 0.00 AURIA");
+
+            if let Some(addr) = disconnect {
+                let request = json!({
+                    "address": addr,
+                    "port": 9000
+                });
+
+                let response = client
+                    .post(format!("{}/api/v1/peers/disconnect", base_url))
+                    .json(&request)
+                    .send()
+                    .await?;
+
+                let data: serde_json::Value = response.json().await?;
+                println!("Disconnect: {} - {}", data["success"], data["message"]);
             }
         }
-        Command::Node { cmd } => match cmd {
-            NodeCommand::List => {
-                println!("=== Connected Nodes ===");
-                println!("node-1: 192.168.1.10:8080 [Online]");
-                println!("node-2: 192.168.1.11:8080 [Online]");
-            }
-            NodeCommand::Info { node_id } => {
-                if let Some(id) = node_id {
-                    println!("Node: {}", id);
-                } else {
-                    println!("Local Node Info:");
-                    println!("  ID: {}", generate_node_id());
-                    println!("  Address: 0.0.0.0:8080");
+
+        Command::Settlement { status, submit, withdraw, history } => {
+            if status {
+                let response = client
+                    .get(format!("{}/api/v1/settlement/status", base_url))
+                    .send()
+                    .await?;
+
+                if response.status().is_success() {
+                    let data: serde_json::Value = response.json().await?;
+                    println!("=== Settlement Status ===");
+                    println!("Connected: {}", data["connected"]);
+                    if data["connected"].as_bool().unwrap_or(false) {
+                        println!("Wallet: {}", data["wallet_address"]);
+                        println!("Chain ID: {}", data["chain_id"]);
+                        println!("Pending Receipts: {}", data["pending_receipts"]);
+                        println!("Total Settled: {}", data["total_settled"]);
+                        println!("Pending Rewards: {}", data["pending_rewards"]);
+                    }
                 }
             }
-            NodeCommand::Add { address } => {
-                println!("Adding node: {}", address);
-            }
-            NodeCommand::Remove { node_id } => {
-                println!("Removing node: {}", node_id);
-            }
-        },
-        Command::Cluster { cmd } => match cmd {
-            ClusterCommand::Status => {
-                println!("=== Cluster Status ===");
-                println!("Coordinator: {}", generate_node_id());
-                println!("Workers: 3");
-                println!("Total experts: 1024");
-                println!("Active experts: 256");
-            }
-            ClusterCommand::Workers { cmd } => match cmd {
-                WorkersCommand::List => {
-                    println!("=== Workers ===");
-                    println!("worker-1: 192.168.1.20:8080 [Max] [Idle]");
-                    println!("worker-2: 192.168.1.21:8080 [Max] [Busy]");
-                    println!("worker-3: 192.168.1.22:8080 [Pro] [Idle]");
+
+            if submit {
+                let response = client
+                    .post(format!("{}/api/v1/settlement/submit", base_url))
+                    .send()
+                    .await?;
+
+                let data: serde_json::Value = response.json().await?;
+                println!("Submit Settlement: {} - {}", data["success"], data["message"]);
+                if data["success"].as_bool().unwrap_or(false) {
+                    println!("TX Hash: {}", data["tx_hash"].as_str().unwrap_or("N/A"));
                 }
-                WorkersCommand::Add { address, tier } => {
-                    println!("Adding worker {} with tier {}", address, tier);
+            }
+
+            if withdraw {
+                let response = client
+                    .post(format!("{}/api/v1/settlement/withdraw", base_url))
+                    .send()
+                    .await?;
+
+                let data: serde_json::Value = response.json().await?;
+                println!("Withdraw: {} - {}", data["success"], data["message"]);
+            }
+
+            if history {
+                let response = client
+                    .get(format!("{}/api/v1/settlement/history", base_url))
+                    .send()
+                    .await?;
+
+                if response.status().is_success() {
+                    let data: serde_json::Value = response.json().await?;
+                    println!("=== Settlement History ===");
+                    println!("Total: {}", data["total"]);
+                    for sub in data["submissions"].as_array().unwrap_or(&vec![]) {
+                        println!("  [{}] {} receipts - {} (gas: {})", 
+                            sub["status"],
+                            sub["receipt_count"],
+                            sub["tx_hash"],
+                            sub["gas_used"].as_u64().unwrap_or(0)
+                        );
+                    }
                 }
-                WorkersCommand::Remove { worker_id } => {
-                    println!("Removing worker: {}", worker_id);
+            }
+        }
+
+        Command::Cluster { status, workers, add_worker } => {
+            if status {
+                let response = client
+                    .get(format!("{}/api/v1/cluster/status", base_url))
+                    .send()
+                    .await?;
+
+                if response.status().is_success() {
+                    let data: serde_json::Value = response.json().await?;
+                    println!("=== Cluster Status ===");
+                    println!("Node ID: {}", data["node_id"]);
+                    println!("Is Leader: {}", data["is_leader"]);
+                    println!("Leader ID: {}", data["leader_id"].as_str().unwrap_or("N/A"));
+                    println!("Workers: {}", data["total_workers"]);
+                    println!("Pending Tasks: {}", data["pending_tasks"]);
+                    
+                    if let Some(raft) = data["raft_info"].as_object() {
+                        println!("Raft Role: {}", raft["role"]);
+                        println!("Raft Term: {}", raft["term"]);
+                    }
                 }
-            },
-            ClusterCommand::Distribute { expert_ids } => {
-                println!("Distributing {} experts across cluster", expert_ids.len());
             }
-        },
-        Command::License { cmd } => match cmd {
-            LicenseCommand::List => {
-                println!("=== Licensed Shards ===");
-                println!("shard-001: Valid");
-                println!("shard-002: Valid");
-                println!("shard-003: Expired");
+
+            if workers {
+                let response = client
+                    .get(format!("{}/api/v1/cluster/workers", base_url))
+                    .send()
+                    .await?;
+
+                if response.status().is_success() {
+                    let data: serde_json::Value = response.json().await?;
+                    println!("=== Cluster Workers ===");
+                    println!("Total: {}", data["total_workers"]);
+                    println!("Idle: {}", data["idle_workers"]);
+                    println!("Busy: {}", data["busy_workers"]);
+                    println!("Offline: {}", data["offline_workers"]);
+                }
             }
-            LicenseCommand::Add { shard_id } => {
-                println!("Adding license for shard: {}", shard_id);
+
+            if let Some(addr) = add_worker {
+                let request = json!({
+                    "id": format!("worker-{}", uuid::Uuid::new_v4().to_string()[..8].to_string()),
+                    "address": addr,
+                    "capabilities": "standard",
+                    "memory_total_mb": 8192,
+                    "cpu_cores": 4,
+                    "gpu_available": false
+                });
+
+                let response = client
+                    .post(format!("{}/api/v1/cluster/workers/add", base_url))
+                    .json(&request)
+                    .send()
+                    .await?;
+
+                let data: serde_json::Value = response.json().await?;
+                println!("Add Worker: {} - {}", data["success"], data["message"]);
             }
-            LicenseCommand::Revoke { shard_id } => {
-                println!("Revoking license for shard: {}", shard_id);
+        }
+
+        Command::Model { status, load } => {
+            if status {
+                let response = client
+                    .get(format!("{}/api/v1/model/status", base_url))
+                    .send()
+                    .await?;
+
+                if response.status().is_success() {
+                    let data: serde_json::Value = response.json().await?;
+                    println!("=== Model Status ===");
+                    println!("Loaded: {}", data["loaded"]);
+                    if data["loaded"].as_bool().unwrap_or(false) {
+                        println!("Model Path: {}", data["model_path"].as_str().unwrap_or("N/A"));
+                    }
+                }
             }
-            LicenseCommand::Validate { shard_id } => {
-                println!("Validating license for shard: {}", shard_id);
-                println!("Valid: true");
+
+            if let Some(path) = load {
+                let request = json!({
+                    "model_path": path
+                });
+
+                let response = client
+                    .post(format!("{}/api/v1/model/load", base_url))
+                    .json(&request)
+                    .send()
+                    .await?;
+
+                let data: serde_json::Value = response.json().await?;
+                println!("Load Model: {} - {}", data["success"], data["message"]);
             }
-        },
-        Command::Metrics { port, format } => {
-            let p = port.unwrap_or(9090);
-            let f = format.unwrap_or_else(|| "prometheus".to_string());
-            println!("Starting metrics server on port {}", p);
-            println!("Format: {}", f);
+        }
+
+        Command::Wallet { create, import, address, balance } => {
+            if create {
+                println!("Creating new wallet...");
+                println!("(Wallet creation would be handled by the node)");
+            }
+
+            if let Some(_mnemonic) = import {
+                println!("Importing wallet from mnemonic...");
+            }
+
+            if address {
+                println!("Getting wallet address...");
+            }
+
+            if balance {
+                println!("Getting wallet balance...");
+            }
         }
     }
 
     Ok(())
-}
-
-fn generate_node_id() -> String {
-    "node-".to_string() + &uuid::Uuid::new_v4().to_string()[..8]
 }
