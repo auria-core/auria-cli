@@ -8,7 +8,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 #[derive(Parser, Debug)]
