@@ -6,7 +6,6 @@
 //     configuring tiers, wallet management, and cluster operations.
 //
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
 use reqwest::Client;
 use serde_json::json;
 
